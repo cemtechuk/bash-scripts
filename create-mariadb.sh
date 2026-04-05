@@ -8,8 +8,8 @@ set -euo pipefail
 DB_NAME="${1:-}"
 DB_USER="${2:-}"
 DB_PASS="${3:-}"
-# Subnet allowed to connect remotely (e.g. 192.168.1.%) — '%' means any host on that subnet
-ALLOWED_HOST="${4:-192.168.1.%}"
+# Host allowed to connect remotely — '%' means any host, or restrict to a subnet e.g. 192.168.1.%
+ALLOWED_HOST="${4:-%}"
 
 # ─── Root credentials (adjust or use --defaults-file if you prefer) ───────────
 MYSQL_ROOT_USER="root"
@@ -29,7 +29,7 @@ usage() {
     echo "  db_name       Name of the database to create"
     echo "  db_user       MariaDB user to create"
     echo "  db_password   Password for the new user"
-    echo "  allowed_host  IP/subnet allowed to connect remotely (default: 192.168.1.%)"
+    echo "  allowed_host  IP/subnet allowed to connect remotely (default: % = any host)"
     echo ""
     echo "  Export MYSQL_ROOT_PASSWORD to avoid the root password prompt."
     echo ""
