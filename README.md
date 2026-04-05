@@ -4,12 +4,12 @@ Utility scripts for managing a Raspberry Pi 5 LAMP server.
 
 ---
 
-## create_mariadb.sh
+## create-mariadb.sh
 
 Creates a MariaDB database, user, and grants access from both localhost and a local network subnet. Rolls back all changes if any step fails.
 
 ```
-sudo bash create_mariadb.sh <db_name> <db_user> <db_password> [allowed_host]
+sudo bash create-mariadb.sh <db_name> <db_user> <db_password> [allowed_host]
 ```
 
 - `allowed_host` defaults to `192.168.1.%`
@@ -37,10 +37,10 @@ Steps performed:
 
 ---
 
-## delete_gz_logs.sh
+## delete-gz-logs.sh
 
 Deletes all `.gz` compressed log files under `/var/log/` recursively.
 
 ```
-sudo bash delete_gz_logs.sh
+sudo bash delete-gz-logs.sh
 ```
