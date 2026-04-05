@@ -373,62 +373,65 @@ rm -f "$PORTS_CONF_BACKUP_KEEP"
 header "STEP 7 — Cloudflare Tunnel Integration"
 
 CF_CONFIG=""
-for candidate in "${CF_CONFIG_CANDIDATES[@]}"; do
-    if [[ -f "$candidate" ]]; then
-        CF_CONFIG="$candidate"
-        break
-    fi
-done
 
-if [[ -z "$CF_CONFIG" ]]; then
-    warn "No cloudflared config.yml found in standard locations."
-    warn "Searched: ${CF_CONFIG_CANDIDATES[*]}"
-    log "Skipping Cloudflare tunnel step."
-    REPORT+=("  Cloudflare: config not found — skipped")
+if ! command -v cloudflared &>/dev/null; then
+    log "cloudflared is not installed — skipping."
+    REPORT+=("  Cloudflare: not installed — skipped")
 else
-    log "Found cloudflared config at: $CF_CONFIG"
-    echo ""
-    log "Current ingress rules:"
-    grep -A 100 '^ingress:' "$CF_CONFIG" || true
-    echo ""
-
-    read -rp "$(echo -e "${BOLD}Add ${SUBDOMAIN} to this Cloudflare tunnel?${RESET} [Y/n]: ")" CF_CONFIRM
-    if [[ "${CF_CONFIRM,,}" != "n" ]]; then
-
-        CF_BACKUP="${CF_CONFIG}.bak.$(date +%Y%m%d_%H%M%S)"
-        cp "$CF_CONFIG" "$CF_BACKUP"
-        ok "Backed up cloudflared config to $CF_BACKUP"
-
-        if grep -q "hostname: ${SUBDOMAIN}" "$CF_CONFIG"; then
-            warn "Hostname $SUBDOMAIN already exists in $CF_CONFIG — skipping."
-            REPORT+=("  Cloudflare: hostname already present — skipped")
-        else
-            # Insert before the catch-all (last entry with no hostname)
-            CATCHALL_LINE=$(awk '/^ingress:/{found=1} found && /^\s+-\s+service:/{last=NR} END{print last+0}' "$CF_CONFIG")
-
-            if [[ "$CATCHALL_LINE" -gt 0 ]]; then
-                sed -i "${CATCHALL_LINE}i\\  - hostname: ${SUBDOMAIN}\\n    service: http://localhost:${PORT}" "$CF_CONFIG"
-                ok "Inserted ingress rule for $SUBDOMAIN before catch-all (line $CATCHALL_LINE)"
-            else
-                printf "  - hostname: %s\n    service: http://localhost:%s\n" "$SUBDOMAIN" "$PORT" >> "$CF_CONFIG"
-                warn "No catch-all detected — appended rule. Review $CF_CONFIG manually."
-            fi
-
-            REPORT+=("  Cloudflare: ingress rule added for $SUBDOMAIN → localhost:${PORT}")
-
-            log "Restarting cloudflared service..."
-            if systemctl restart cloudflared 2>/dev/null; then
-                ok "cloudflared restarted"
-            else
-                warn "Could not restart cloudflared (check 'systemctl status cloudflared')."
-            fi
-
-            log "Updated ingress rules:"
-            grep -A 100 '^ingress:' "$CF_CONFIG" || true
+    for candidate in "${CF_CONFIG_CANDIDATES[@]}"; do
+        if [[ -f "$candidate" ]]; then
+            CF_CONFIG="$candidate"
+            break
         fi
+    done
+
+    if [[ -z "$CF_CONFIG" ]] || ! grep -q '^ingress:' "$CF_CONFIG" 2>/dev/null; then
+        log "cloudflared is installed but no tunnel is configured — skipping."
+        REPORT+=("  Cloudflare: no tunnel configured — skipped")
     else
-        log "Skipping Cloudflare tunnel integration."
-        REPORT+=("  Cloudflare: skipped by user")
+        log "Found cloudflared config at: $CF_CONFIG"
+        echo ""
+        log "Current ingress rules:"
+        grep -A 100 '^ingress:' "$CF_CONFIG" || true
+        echo ""
+
+        read -rp "$(echo -e "${BOLD}Add ${SUBDOMAIN} to this Cloudflare tunnel?${RESET} [Y/n]: ")" CF_CONFIRM
+        if [[ "${CF_CONFIRM,,}" == "n" ]]; then
+            log "Skipping Cloudflare tunnel integration."
+            REPORT+=("  Cloudflare: skipped by user")
+        else
+            CF_BACKUP="${CF_CONFIG}.bak.$(date +%Y%m%d_%H%M%S)"
+            cp "$CF_CONFIG" "$CF_BACKUP"
+            ok "Backed up cloudflared config to $CF_BACKUP"
+
+            if grep -q "hostname: ${SUBDOMAIN}" "$CF_CONFIG"; then
+                warn "Hostname $SUBDOMAIN already exists in $CF_CONFIG — skipping."
+                REPORT+=("  Cloudflare: hostname already present — skipped")
+            else
+                # Insert before the catch-all (last entry with no hostname)
+                CATCHALL_LINE=$(awk '/^ingress:/{found=1} found && /^\s+-\s+service:/{last=NR} END{print last+0}' "$CF_CONFIG")
+
+                if [[ "$CATCHALL_LINE" -gt 0 ]]; then
+                    sed -i "${CATCHALL_LINE}i\\  - hostname: ${SUBDOMAIN}\\n    service: http://localhost:${PORT}" "$CF_CONFIG"
+                    ok "Inserted ingress rule for $SUBDOMAIN before catch-all (line $CATCHALL_LINE)"
+                else
+                    printf "  - hostname: %s\n    service: http://localhost:%s\n" "$SUBDOMAIN" "$PORT" >> "$CF_CONFIG"
+                    warn "No catch-all detected — appended rule. Review $CF_CONFIG manually."
+                fi
+
+                REPORT+=("  Cloudflare: ingress rule added for $SUBDOMAIN → localhost:${PORT}")
+
+                log "Restarting cloudflared service..."
+                if systemctl restart cloudflared 2>/dev/null; then
+                    ok "cloudflared restarted"
+                else
+                    warn "Could not restart cloudflared (check 'systemctl status cloudflared')."
+                fi
+
+                log "Updated ingress rules:"
+                grep -A 100 '^ingress:' "$CF_CONFIG" || true
+            fi
+        fi
     fi
 fi
 
