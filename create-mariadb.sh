@@ -8,7 +8,7 @@ set -euo pipefail
 DB_NAME="${1:-}"
 DB_USER="${2:-}"
 DB_PASS="${3:-}"
-# Host allowed to connect remotely — '%' means any host, or restrict to a subnet e.g. 192.168.1.%
+# Host allowed to connect remotely — '%' means any host, or restrict to a subnet e.g. 10.0.0.%
 ALLOWED_HOST="${4:-%}"
 
 # ─── Root credentials (adjust or use --defaults-file if you prefer) ───────────
