@@ -269,23 +269,29 @@ NEW_LISTEN="Listen ${LISTEN_IP_PREFIX}${PORT}"
 if grep -qE "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF"; then
     warn "Port $PORT already in $PORTS_CONF — skipping."
 else
-    # Find the line number of the LAST Listen directive (bare port or IP:port)
-    LAST_LISTEN_LINE=$(grep -nE '^\s*Listen\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:)?[0-9]+\s*$' "$PORTS_CONF" \
-        | tail -1 | cut -d: -f1)
+    # Find the last Listen directive that sits outside any <IfModule> block
+    # (Listen 443 lines inside <IfModule ssl_module> / mod_gnutls.c must not be used as insertion points)
+    FIRST_IFMODULE=$(grep -n '<IfModule' "$PORTS_CONF" | head -1 | cut -d: -f1)
+
+    if [[ -n "$FIRST_IFMODULE" ]]; then
+        # Only consider Listen lines before the first <IfModule block
+        LAST_LISTEN_LINE=$(head -n "$((FIRST_IFMODULE - 1))" "$PORTS_CONF" \
+            | grep -nE '^\s*Listen\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:)?[0-9]+\s*$' \
+            | tail -1 | cut -d: -f1)
+    else
+        LAST_LISTEN_LINE=$(grep -nE '^\s*Listen\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:)?[0-9]+\s*$' "$PORTS_CONF" \
+            | tail -1 | cut -d: -f1)
+    fi
 
     if [[ -n "$LAST_LISTEN_LINE" ]]; then
         sed -i "${LAST_LISTEN_LINE}a ${NEW_LISTEN}" "$PORTS_CONF"
         ok "Inserted '$NEW_LISTEN' after line $LAST_LISTEN_LINE in $PORTS_CONF"
+    elif [[ -n "$FIRST_IFMODULE" ]]; then
+        INSERT_AT=$(( FIRST_IFMODULE - 1 ))
+        sed -i "${INSERT_AT}a ${NEW_LISTEN}" "$PORTS_CONF"
+        ok "Inserted '$NEW_LISTEN' before <IfModule at line $FIRST_IFMODULE in $PORTS_CONF"
     else
-        # No Listen lines found — insert before first <IfModule
-        FIRST_IFMODULE=$(grep -n '<IfModule' "$PORTS_CONF" | head -1 | cut -d: -f1)
-        if [[ -n "$FIRST_IFMODULE" ]]; then
-            INSERT_AT=$(( FIRST_IFMODULE - 1 ))
-            sed -i "${INSERT_AT}a ${NEW_LISTEN}" "$PORTS_CONF"
-            ok "Inserted '$NEW_LISTEN' before <IfModule at line $FIRST_IFMODULE in $PORTS_CONF"
-        else
-            die "Could not find a safe insertion point in $PORTS_CONF. Please add '$NEW_LISTEN' manually."
-        fi
+        die "Could not find a safe insertion point in $PORTS_CONF. Please add '$NEW_LISTEN' manually."
     fi
 fi
 
@@ -373,6 +379,7 @@ rm -f "$PORTS_CONF_BACKUP_KEEP"
 header "STEP 7 — Cloudflare Tunnel Integration"
 
 CF_CONFIG=""
+CF_NEEDS_RESTART=false
 
 if ! command -v cloudflared &>/dev/null; then
     log "cloudflared is not installed — skipping."
@@ -420,13 +427,8 @@ else
                 fi
 
                 REPORT+=("  Cloudflare: ingress rule added for $SUBDOMAIN → localhost:${PORT}")
-
-                log "Restarting cloudflared service..."
-                if systemctl restart cloudflared 2>/dev/null; then
-                    ok "cloudflared restarted"
-                else
-                    warn "Could not restart cloudflared (check 'systemctl status cloudflared')."
-                fi
+                REPORT+=("  Cloudflare: service restart deferred until after report")
+                CF_NEEDS_RESTART=true
 
                 log "Updated ingress rules:"
                 grep -A 100 '^ingress:' "$CF_CONFIG" || true
@@ -439,3 +441,14 @@ fi
 # FINAL REPORT
 # =============================================================================
 print_report
+
+# Restart cloudflared after the report — if connected via the tunnel, restarting
+# earlier would drop the connection before the user could read the output
+if [[ "$CF_NEEDS_RESTART" == "true" ]]; then
+    warn "Restarting cloudflared now — if you are connected via the tunnel, your connection will drop momentarily."
+    if systemctl restart cloudflared 2>/dev/null; then
+        echo -e "${GREEN}[OK]${RESET}    cloudflared restarted successfully"
+    else
+        echo -e "${YELLOW}[WARN]${RESET}  Could not restart cloudflared (check 'systemctl status cloudflared')."
+    fi
+fi
