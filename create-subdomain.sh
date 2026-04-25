@@ -535,7 +535,7 @@ if [[ "${GIT_INIT_CONFIRM,,}" != "n" ]]; then
 
         # Create a sensible .gitignore if one doesn't exist yet
         if [[ ! -f "${BASE_DOCROOT}/.gitignore" ]]; then
-            printf '.env\n*.log\n/vendor/\n/node_modules/\n' > "${BASE_DOCROOT}/.gitignore"
+            printf '.env\ndeploy.sh\n*.log\n/vendor/\n/node_modules/\n' > "${BASE_DOCROOT}/.gitignore"
             chown "${DEPLOY_USER}:www-data" "${BASE_DOCROOT}/.gitignore"
         fi
 
