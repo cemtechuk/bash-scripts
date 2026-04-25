@@ -12,6 +12,15 @@ APP_GROUP="www-data"
 FRAMEWORK="none"
 # ─────────────────────────────────────────────────────────────
 
+# chmod a directory only if it exists; skip with a notice otherwise
+perm() {
+    if [ -d "$1" ]; then
+        sudo chmod -R 775 "$1"
+    else
+        echo "  [SKIP] $1 not found — skipping"
+    fi
+}
+
 cd "$APP_DIR"
 
 echo "==> Pulling latest changes..."
@@ -23,30 +32,30 @@ sudo chown -R "$APP_USER:$APP_GROUP" "$APP_DIR"
 # ─── Permissions ─────────────────────────────────────────────
 if [ "$FRAMEWORK" = "laravel" ]; then
     echo "==> Fixing permissions..."
-    sudo chmod -R 775 "$APP_DIR/storage"
-    sudo chmod -R 775 "$APP_DIR/bootstrap/cache"
-    # sudo chmod -R 775 "$APP_DIR/public/uploads"   # uncomment if handling file uploads
+    perm "$APP_DIR/storage"
+    perm "$APP_DIR/bootstrap/cache"
+    # perm "$APP_DIR/public/uploads"   # uncomment if handling file uploads
 
 elif [ "$FRAMEWORK" = "codeigniter" ]; then
     echo "==> Fixing permissions..."
-    sudo chmod -R 775 "$APP_DIR/writable"
-    # sudo chmod -R 775 "$APP_DIR/public/uploads"   # uncomment if handling file uploads
+    perm "$APP_DIR/writable"
+    # perm "$APP_DIR/public/uploads"   # uncomment if handling file uploads
 
 elif [ "$FRAMEWORK" = "symfony" ]; then
     echo "==> Fixing permissions..."
-    sudo chmod -R 775 "$APP_DIR/var/cache"
-    sudo chmod -R 775 "$APP_DIR/var/log"
-    # sudo chmod -R 775 "$APP_DIR/public/uploads"   # uncomment if handling file uploads
+    perm "$APP_DIR/var/cache"
+    perm "$APP_DIR/var/log"
+    # perm "$APP_DIR/public/uploads"   # uncomment if handling file uploads
 
 elif [ "$FRAMEWORK" = "cakephp" ]; then
     echo "==> Fixing permissions..."
-    sudo chmod -R 775 "$APP_DIR/logs"
-    sudo chmod -R 775 "$APP_DIR/tmp"
-    # sudo chmod -R 775 "$APP_DIR/webroot/uploads"  # uncomment if handling file uploads
+    perm "$APP_DIR/logs"
+    perm "$APP_DIR/tmp"
+    # perm "$APP_DIR/webroot/uploads"  # uncomment if handling file uploads
 
 else
-    : # No framework — add project-specific chmod lines here if needed
-    # sudo chmod -R 775 "$APP_DIR/uploads"
+    : # No framework — add project-specific perm lines here if needed
+    # perm "$APP_DIR/uploads"
 fi
 
 # ─── Migrations ──────────────────────────────────────────────
