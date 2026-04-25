@@ -193,16 +193,21 @@ LISTEN_IP_PREFIX=$(grep -E '^\s*Listen\s+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+' 
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:' | head -1)
 # LISTEN_IP_PREFIX will be "127.0.0.1:" or empty (bare port style)
 
-# Find the highest port that looks like a local-app port (>= 8000, < 65535)
-LAST_APP_PORT=$(echo "$USED_PORTS" | awk '$1>=8000 && $1<65535 {last=$1} END {print last+0}')
+# Find first available port in the app-port range (≥ 8000), filling any gaps
+SUGGESTED_PORT=$(echo "$USED_PORTS" | awk '
+    $1 >= 8000 && $1 < 65535 { ports[$1] = 1; count++ }
+    END {
+        if (count == 0) { print 8080; exit }
+        min = 65535
+        for (p in ports) if (p + 0 < min) min = p + 0
+        for (p = min; p < 65535; p++) {
+            if (!(p in ports)) { print p; exit }
+        }
+    }
+')
+[[ -z "$SUGGESTED_PORT" ]] && SUGGESTED_PORT=8080
 
-if [[ "$LAST_APP_PORT" -lt 8000 ]]; then
-    SUGGESTED_PORT=8080
-else
-    SUGGESTED_PORT=$(( LAST_APP_PORT + 1 ))
-fi
-
-log "Last detected app port: ${LAST_APP_PORT:-none}  →  Suggested next port: $SUGGESTED_PORT"
+log "Suggested next available port: $SUGGESTED_PORT"
 
 read -rp "$(echo -e "${BOLD}Use port ${SUGGESTED_PORT}?${RESET} [Y/n or enter a custom port]: ")" PORT_INPUT
 PORT_INPUT="${PORT_INPUT// /}"
