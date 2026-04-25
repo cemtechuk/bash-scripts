@@ -170,10 +170,13 @@ DOCROOT=$(awk '/^\s*DocumentRoot\s+/{print $2; exit}' "$CONF_FILE" | xargs || tr
 
 # Find the exact Listen line for this port in ports.conf
 LISTEN_LINE=$(grep -E "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF" | head -1 | sed 's/[[:space:]]*$//' || true)
+LISTEN_FOUND=false
 if [[ -z "$LISTEN_LINE" ]]; then
-    die "No Listen directive for port $PORT found in $PORTS_CONF — aborting."
+    warn "No Listen directive for port $PORT found in $PORTS_CONF — skipping ports.conf cleanup"
+else
+    LISTEN_FOUND=true
+    log "Found in ports.conf: '$LISTEN_LINE'"
 fi
-log "Found in ports.conf: '$LISTEN_LINE'"
 
 # Check for a Cloudflare ingress entry
 CF_INGRESS_FOUND=false
@@ -200,7 +203,11 @@ header "STEP 3 — Preview of Changes"
 echo ""
 echo -e "  ${BOLD}${RED}The following will be removed:${RESET}"
 echo ""
-printf "    ${RED}✖${RESET}  Listen directive  →  '%s'  from %s\n" "$LISTEN_LINE" "$PORTS_CONF"
+if [[ "$LISTEN_FOUND" == "true" ]]; then
+    printf "    ${RED}✖${RESET}  Listen directive  →  '%s'  from %s\n" "$LISTEN_LINE" "$PORTS_CONF"
+else
+    printf "    ${YELLOW}⚠${RESET}  Listen directive  →  port %s not in %s (already removed — skipping)\n" "$PORT" "$PORTS_CONF"
+fi
 printf "    ${RED}✖${RESET}  VirtualHost config →  %s\n" "$CONF_FILE"
 if [[ "$CF_INGRESS_FOUND" == "true" ]]; then
     printf "    ${RED}✖${RESET}  CF ingress rule    →  hostname: %s  from %s\n" "$SUBDOMAIN" "$CF_CONFIG"
@@ -229,10 +236,12 @@ fi
 # =============================================================================
 header "STEP 5 — Removing Configuration"
 
-# — Backup ports.conf —
-PORTS_CONF_BACKUP="${PORTS_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
-cp "$PORTS_CONF" "$PORTS_CONF_BACKUP"
-log "Backed up $PORTS_CONF → $PORTS_CONF_BACKUP"
+# — Backup ports.conf (only if we have a Listen line to remove) —
+if [[ "$LISTEN_FOUND" == "true" ]]; then
+    PORTS_CONF_BACKUP="${PORTS_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$PORTS_CONF" "$PORTS_CONF_BACKUP"
+    log "Backed up $PORTS_CONF → $PORTS_CONF_BACKUP"
+fi
 
 # — Backup vhost conf (so rollback can restore it if a later step fails) —
 CONF_FILE_BACKUP="${CONF_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
@@ -247,16 +256,20 @@ else
     log "a2dissite returned non-zero — site may have already been disabled, continuing"
 fi
 
-# — Remove Listen directive from ports.conf (find line number for precise deletion) —
-LISTEN_LINE_NUM=$(grep -nE "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF" | head -1 | cut -d: -f1 || true)
-if [[ -z "$LISTEN_LINE_NUM" ]]; then
-    die "Listen directive for port $PORT not found in $PORTS_CONF — cannot remove it"
+# — Remove Listen directive from ports.conf —
+if [[ "$LISTEN_FOUND" == "true" ]]; then
+    LISTEN_LINE_NUM=$(grep -nE "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF" | head -1 | cut -d: -f1 || true)
+    if [[ -z "$LISTEN_LINE_NUM" ]]; then
+        die "Listen directive for port $PORT not found in $PORTS_CONF — cannot remove it"
+    fi
+    sed -i "${LISTEN_LINE_NUM}d" "$PORTS_CONF"
+    if grep -qE "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF"; then
+        die "Listen $PORT still present in $PORTS_CONF after deletion attempt"
+    fi
+    ok "Removed '$LISTEN_LINE' from $PORTS_CONF"
+else
+    warn "Skipped ports.conf — no Listen directive was present for port $PORT"
 fi
-sed -i "${LISTEN_LINE_NUM}d" "$PORTS_CONF"
-if grep -qE "^\s*Listen\s+(\S+:)?${PORT}\s*$" "$PORTS_CONF"; then
-    die "Listen $PORT still present in $PORTS_CONF after deletion attempt"
-fi
-ok "Removed '$LISTEN_LINE' from $PORTS_CONF"
 
 # — Delete vhost conf —
 rm -f "$CONF_FILE"
