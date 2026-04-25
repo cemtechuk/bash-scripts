@@ -222,7 +222,16 @@ REPORT+=("  Port     : $PORT")
 # =============================================================================
 header "STEP 3 — Document Root"
 
-DEFAULT_DOCROOT="/var/www/${SUBDOMAIN%%.*}"
+DEFAULT_DOCROOT="/var/www/${SUBDOMAIN}"
+IS_FRAMEWORK=false
+
+read -rp "$(echo -e "${BOLD}Framework project (Laravel, CodeIgniter, etc.)?${RESET} [y/N]: ")" FW_CONFIRM
+if [[ "${FW_CONFIRM,,}" == "y" ]]; then
+    DEFAULT_DOCROOT="${DEFAULT_DOCROOT}/public"
+    IS_FRAMEWORK=true
+    log "Framework mode — document root will point to /public subfolder"
+fi
+
 read -rp "$(echo -e "${BOLD}Document root${RESET} [${DEFAULT_DOCROOT}]: ")" DOCROOT_INPUT
 DOCROOT="${DOCROOT_INPUT:-$DEFAULT_DOCROOT}"
 DOCROOT="${DOCROOT%/}"
@@ -232,7 +241,8 @@ if [[ ! -d "$DOCROOT" ]]; then
     if [[ "${MKDIR_CONFIRM,,}" != "n" ]]; then
         mkdir -p "$DOCROOT"
         DOCROOT_CREATED=true
-        cat > "$DOCROOT/index.html" <<HTML
+        if [[ "$IS_FRAMEWORK" == "false" ]]; then
+            cat > "$DOCROOT/index.html" <<HTML
 <!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>${SUBDOMAIN}</title></head>
@@ -242,6 +252,7 @@ if [[ ! -d "$DOCROOT" ]]; then
 </body>
 </html>
 HTML
+        fi
         chown -R www-data:www-data "$DOCROOT"
         ok "Created document root: $DOCROOT"
     else
