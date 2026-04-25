@@ -26,6 +26,15 @@ cd "$APP_DIR"
 echo "==> Pulling latest changes..."
 git pull
 
+# ─── Dependencies ────────────────────────────────────────────
+if [ "$FRAMEWORK" != "none" ]; then
+    echo "==> Installing Composer dependencies..."
+    composer install --no-dev --optimize-autoloader --no-interaction
+else
+    : # No framework — uncomment if your project uses Composer:
+    # composer install --no-dev --optimize-autoloader --no-interaction
+fi
+
 echo "==> Fixing ownership..."
 sudo chown -R "$APP_USER:$APP_GROUP" "$APP_DIR"
 
