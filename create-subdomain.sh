@@ -105,8 +105,7 @@ print_report() {
 
 # ── Root check ────────────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}[ERROR]${RESET} This script must be run as root (sudo $0)" >&2
-    exit 1
+    exec sudo "$0" "$@"
 fi
 
 # ── Banner ────────────────────────────────────────────────────────────────────
