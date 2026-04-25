@@ -157,10 +157,10 @@ log "Selected: $SUBDOMAIN ($CONF_FILE)"
 # =============================================================================
 header "STEP 2 — Reading & Verifying Configuration"
 
-# Extract port from <VirtualHost *:PORT>
-PORT=$(grep -oP '(?<=<VirtualHost \*:)\d+(?=>)' "$CONF_FILE" | head -1 || true)
+# Extract port from <VirtualHost *:PORT> or <VirtualHost 127.0.0.1:PORT>
+PORT=$(grep -oP '(?<=<VirtualHost )[^>]+(?=>)' "$CONF_FILE" | head -1 | grep -oP '\d+$' || true)
 if [[ -z "$PORT" ]]; then
-    die "Cannot find port in $CONF_FILE (expected '<VirtualHost *:PORT>') — aborting."
+    die "Cannot find port in $CONF_FILE (expected '<VirtualHost *:PORT>' or '<VirtualHost IP:PORT>') — aborting."
 fi
 log "Port found in vhost config: $PORT"
 
