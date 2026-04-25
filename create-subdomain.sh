@@ -26,7 +26,12 @@ PORTS_CONF_BACKUP=""
 CONF_FILE_CREATED=false
 DOCROOT_CREATED=false
 DOCROOT=""
+BASE_DOCROOT=""
 CONF_FILE=""
+FRAMEWORK="none"
+FW_PUBLIC_DIR=""
+IS_FRAMEWORK=false
+DEPLOY_SCRIPT=""
 
 log()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 ok()     { echo -e "${GREEN}[OK]${RESET}    $*"; REPORT+=("✔ $*"); }
@@ -85,9 +90,11 @@ print_report() {
     echo -e "  ${BOLD}Date/Time  :${RESET} $(date '+%Y-%m-%d %H:%M:%S')"
     echo -e "  ${BOLD}Hostname   :${RESET} ${SUBDOMAIN:-n/a}"
     echo -e "  ${BOLD}Port       :${RESET} ${PORT:-n/a}"
+    echo -e "  ${BOLD}Framework  :${RESET} ${FRAMEWORK:-none}"
     echo -e "  ${BOLD}DocRoot    :${RESET} ${DOCROOT:-n/a}"
     echo -e "  ${BOLD}VHost conf :${RESET} ${CONF_FILE:-n/a}"
     echo -e "  ${BOLD}ports.conf :${RESET} $PORTS_CONF"
+    [[ -n "${DEPLOY_SCRIPT:-}" ]] && echo -e "  ${BOLD}Deploy     :${RESET} $DEPLOY_SCRIPT"
     [[ -n "${CF_CONFIG:-}" ]] && echo -e "  ${BOLD}CF config  :${RESET} $CF_CONFIG"
     echo ""
     echo -e "  ${BOLD}Actions performed:${RESET}"
@@ -223,13 +230,31 @@ REPORT+=("  Port     : $PORT")
 header "STEP 3 — Document Root"
 
 DEFAULT_DOCROOT="/var/www/${SUBDOMAIN}"
-IS_FRAMEWORK=false
 
-read -rp "$(echo -e "${BOLD}Framework project (Laravel, CodeIgniter, etc.)?${RESET} [y/N]: ")" FW_CONFIRM
-if [[ "${FW_CONFIRM,,}" == "y" ]]; then
-    DEFAULT_DOCROOT="${DEFAULT_DOCROOT}/public"
-    IS_FRAMEWORK=true
-    log "Framework mode — document root will point to /public subfolder"
+echo ""
+echo -e "  ${BOLD}Select framework:${RESET}"
+echo "    1) Laravel"
+echo "    2) CodeIgniter 4"
+echo "    3) Symfony"
+echo "    4) CakePHP"
+echo "    5) None (plain PHP / static)"
+echo ""
+read -rp "$(echo -e "${BOLD}Framework${RESET} [1-5, default 5]: ")" FW_INPUT
+case "${FW_INPUT:-5}" in
+    1) FRAMEWORK="laravel";     FW_PUBLIC_DIR="public";  IS_FRAMEWORK=true
+       log "Framework: Laravel — docroot → /public" ;;
+    2) FRAMEWORK="codeigniter"; FW_PUBLIC_DIR="public";  IS_FRAMEWORK=true
+       log "Framework: CodeIgniter 4 — docroot → /public" ;;
+    3) FRAMEWORK="symfony";     FW_PUBLIC_DIR="public";  IS_FRAMEWORK=true
+       log "Framework: Symfony — docroot → /public" ;;
+    4) FRAMEWORK="cakephp";     FW_PUBLIC_DIR="webroot"; IS_FRAMEWORK=true
+       log "Framework: CakePHP — docroot → /webroot" ;;
+    *)  FRAMEWORK="none";        FW_PUBLIC_DIR="";        IS_FRAMEWORK=false
+       log "No framework selected" ;;
+esac
+
+if [[ "$IS_FRAMEWORK" == "true" ]]; then
+    DEFAULT_DOCROOT="${DEFAULT_DOCROOT}/${FW_PUBLIC_DIR}"
 fi
 
 read -rp "$(echo -e "${BOLD}Document root${RESET} [${DEFAULT_DOCROOT}]: ")" DOCROOT_INPUT
@@ -384,9 +409,43 @@ DOCROOT_CREATED=false
 rm -f "$PORTS_CONF_BACKUP_KEEP"
 
 # =============================================================================
-# STEP 7 — Cloudflare Tunnel (optional)
+# STEP 7 — Deploy script
 # =============================================================================
-header "STEP 7 — Cloudflare Tunnel Integration"
+header "STEP 7 — Deploy Script"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TEMPLATE_FILE="${SCRIPT_DIR}/deploy.template.sh"
+DEPLOY_USER="${SUDO_USER:-cem}"
+
+# Base docroot is always the project root, not the framework public subdir
+if [[ "$IS_FRAMEWORK" == "true" ]]; then
+    BASE_DOCROOT="${DOCROOT%/${FW_PUBLIC_DIR}}"
+else
+    BASE_DOCROOT="$DOCROOT"
+fi
+
+if [[ ! -f "$TEMPLATE_FILE" ]]; then
+    warn "deploy.template.sh not found at $TEMPLATE_FILE — deploy script not created."
+    REPORT+=("  Deploy   : template not found — skipped")
+elif [[ ! -d "$BASE_DOCROOT" ]]; then
+    warn "Base docroot $BASE_DOCROOT does not exist — deploy script not created."
+    REPORT+=("  Deploy   : docroot missing — skipped")
+else
+    DEPLOY_SCRIPT="${BASE_DOCROOT}/deploy.sh"
+    cp "$TEMPLATE_FILE" "$DEPLOY_SCRIPT"
+    sed -i "s|APP_DIR=\"/var/www/HOSTNAME\"|APP_DIR=\"${BASE_DOCROOT}\"|" "$DEPLOY_SCRIPT"
+    sed -i "s|FRAMEWORK=\"none\"|FRAMEWORK=\"${FRAMEWORK}\"|" "$DEPLOY_SCRIPT"
+    sed -i "s|APP_USER=\"cem\"|APP_USER=\"${DEPLOY_USER}\"|" "$DEPLOY_SCRIPT"
+    chmod 750 "$DEPLOY_SCRIPT"
+    chown "${DEPLOY_USER}:www-data" "$DEPLOY_SCRIPT"
+    ok "Deploy script written to $DEPLOY_SCRIPT"
+    REPORT+=("  Deploy   : $DEPLOY_SCRIPT")
+fi
+
+# =============================================================================
+# STEP 8 — Cloudflare Tunnel (optional)
+# =============================================================================
+header "STEP 8 — Cloudflare Tunnel Integration"
 
 CF_CONFIG=""
 CF_NEEDS_RESTART=false
