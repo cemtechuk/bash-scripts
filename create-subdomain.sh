@@ -32,6 +32,7 @@ FRAMEWORK="none"
 FW_PUBLIC_DIR=""
 IS_FRAMEWORK=false
 DEPLOY_SCRIPT=""
+GIT_REMOTE_DISPLAY=""
 
 log()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 ok()     { echo -e "${GREEN}[OK]${RESET}    $*"; REPORT+=("✔ $*"); }
@@ -96,6 +97,7 @@ print_report() {
     echo -e "  ${BOLD}ports.conf :${RESET} $PORTS_CONF"
     [[ -n "${DEPLOY_SCRIPT:-}" ]] && echo -e "  ${BOLD}Deploy     :${RESET} $DEPLOY_SCRIPT"
     [[ -n "${CF_CONFIG:-}" ]] && echo -e "  ${BOLD}CF config  :${RESET} $CF_CONFIG"
+    [[ -n "${GIT_REMOTE_DISPLAY:-}" ]] && echo -e "  ${BOLD}Git remote :${RESET} $GIT_REMOTE_DISPLAY"
     echo ""
     echo -e "  ${BOLD}Actions performed:${RESET}"
     for entry in "${REPORT[@]}"; do
@@ -504,6 +506,135 @@ else
             fi
         fi
     fi
+fi
+
+# =============================================================================
+# STEP 9 — Git Repository
+# =============================================================================
+header "STEP 9 — Git Repository"
+
+GIT_REPO_INITIALIZED=false
+
+read -rp "$(echo -e "${BOLD}Initialise a git repository in ${BASE_DOCROOT}?${RESET} [Y/n]: ")" GIT_INIT_CONFIRM
+
+if [[ "${GIT_INIT_CONFIRM,,}" != "n" ]]; then
+
+    # Ensure DEPLOY_USER owns BASE_DOCROOT so git can create .git there
+    chown "${DEPLOY_USER}:www-data" "$BASE_DOCROOT"
+
+    if [[ -d "${BASE_DOCROOT}/.git" ]]; then
+        warn "Git repo already exists in ${BASE_DOCROOT} — skipping init."
+        GIT_REPO_INITIALIZED=true
+    else
+        log "Initialising git repository in ${BASE_DOCROOT}..."
+
+        # Create a sensible .gitignore if one doesn't exist yet
+        if [[ ! -f "${BASE_DOCROOT}/.gitignore" ]]; then
+            printf '.env\n*.log\n/vendor/\n/node_modules/\n' > "${BASE_DOCROOT}/.gitignore"
+            chown "${DEPLOY_USER}:www-data" "${BASE_DOCROOT}/.gitignore"
+        fi
+
+        # git init — try -b main (git ≥ 2.28); graceful fallback for older versions
+        if ! sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" init -b main 2>/dev/null; then
+            sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" init
+            sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" checkout -b main 2>/dev/null || true
+        fi
+
+        sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" add -A
+
+        if sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" \
+                commit -m "Initial commit — scaffold by create-subdomain.sh"; then
+            ok "Git repo initialised with initial commit in ${BASE_DOCROOT}"
+            REPORT+=("  Git      : repo initialised — ${BASE_DOCROOT}")
+        else
+            warn "Initial commit failed — git identity may not be configured for ${DEPLOY_USER}."
+            warn "Fix: sudo -Hu ${DEPLOY_USER} git config --global user.name 'Your Name'"
+            warn "Fix: sudo -Hu ${DEPLOY_USER} git config --global user.email 'you@example.com'"
+            REPORT+=("  Git      : init OK, initial commit failed — configure git identity")
+        fi
+        GIT_REPO_INITIALIZED=true
+    fi
+
+    # ── Remote linking ────────────────────────────────────────────────────────
+    if [[ "$GIT_REPO_INITIALIZED" == "true" ]]; then
+        echo ""
+        read -rp "$(echo -e "${BOLD}Link to a remote GitHub repository?${RESET} [Y/n]: ")" GIT_REMOTE_CONFIRM
+
+        if [[ "${GIT_REMOTE_CONFIRM,,}" != "n" ]]; then
+            ENV_FILE="${SCRIPT_DIR}/.env"
+            GITHUB_TOKEN=""
+
+            if [[ -f "$ENV_FILE" ]]; then
+                GITHUB_TOKEN=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" 2>/dev/null \
+                    | head -1 | cut -d'=' -f2- | sed "s/[[:space:]\"']//g")
+            fi
+
+            if [[ -z "$GITHUB_TOKEN" ]]; then
+                echo -e "${YELLOW}  No GitHub token found in ${ENV_FILE}.${RESET}"
+                IFS= read -rsp "  $(echo -e "${BOLD}GitHub Personal Access Token${RESET}") (input hidden): " GITHUB_TOKEN
+                echo ""
+                if [[ -n "$GITHUB_TOKEN" ]]; then
+                    read -rp "  Save token to ${ENV_FILE} for future use? [Y/n]: " SAVE_TOKEN_CONFIRM
+                    if [[ "${SAVE_TOKEN_CONFIRM,,}" != "n" ]]; then
+                        touch "$ENV_FILE"
+                        chmod 600 "$ENV_FILE"
+                        if grep -q '^GITHUB_TOKEN=' "$ENV_FILE" 2>/dev/null; then
+                            sed -i "s|^GITHUB_TOKEN=.*|GITHUB_TOKEN=${GITHUB_TOKEN}|" "$ENV_FILE"
+                        else
+                            echo "GITHUB_TOKEN=${GITHUB_TOKEN}" >> "$ENV_FILE"
+                        fi
+                        ok "Token saved to ${ENV_FILE}"
+                        REPORT+=("  GitHub   : token saved to ${ENV_FILE}")
+                    fi
+                else
+                    warn "No token entered — skipping remote setup."
+                fi
+            else
+                log "GitHub token loaded from ${ENV_FILE}"
+            fi
+
+            if [[ -n "$GITHUB_TOKEN" ]]; then
+                read -rp "  $(echo -e "${BOLD}Remote repo${RESET}") (e.g. username/repo-name): " REPO_INPUT
+                REPO_INPUT="${REPO_INPUT// /}"
+                # Normalise: strip protocol/host prefix and .git suffix
+                REPO_PATH=$(echo "$REPO_INPUT" \
+                    | sed 's|^https://github\.com/||; s|^github\.com/||; s|\.git$||')
+
+                if [[ -z "$REPO_PATH" || ! "$REPO_PATH" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+                    warn "Invalid repo format (expected 'username/repo-name') — skipping remote."
+                    REPORT+=("  Git remote: invalid input — skipped")
+                else
+                    GIT_REMOTE_DISPLAY="https://github.com/${REPO_PATH}.git"
+                    REMOTE_URL="https://${GITHUB_TOKEN}@github.com/${REPO_PATH}.git"
+
+                    log "Adding remote 'origin' → ${GIT_REMOTE_DISPLAY} (token auth)"
+                    # Remove stale origin silently before adding
+                    sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" remote remove origin 2>/dev/null || true
+
+                    if sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" remote add origin "$REMOTE_URL"; then
+                        log "Pushing to remote..."
+                        if sudo -Hu "$DEPLOY_USER" git -C "$BASE_DOCROOT" push -u origin HEAD; then
+                            ok "Pushed to ${GIT_REMOTE_DISPLAY}"
+                            REPORT+=("  Git remote: ${GIT_REMOTE_DISPLAY}")
+                        else
+                            warn "Push failed — verify token has 'repo' scope and ${REPO_PATH} exists on GitHub."
+                            REPORT+=("  Git remote: added, push failed — check token / repo exists")
+                        fi
+                    else
+                        warn "Failed to add remote 'origin'."
+                        REPORT+=("  Git remote: remote add failed")
+                    fi
+                fi
+            fi
+        else
+            log "Skipping remote setup."
+            REPORT+=("  Git      : local only, no remote")
+        fi
+    fi
+
+else
+    log "Skipping git repository setup."
+    REPORT+=("  Git      : skipped")
 fi
 
 # =============================================================================
