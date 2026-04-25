@@ -24,18 +24,19 @@ warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
-    echo "Usage: $0 <db_name> <db_user> <db_password> [allowed_host]"
+    echo "Usage: $0 <db_name> <db_user> [db_password] [allowed_host]"
     echo ""
     echo "  db_name       Name of the database to create"
     echo "  db_user       MariaDB user to create"
-    echo "  db_password   Password for the new user"
+    echo "  db_password   Password for the new user (prompted if omitted)"
     echo "  allowed_host  IP/subnet allowed to connect remotely (default: % = any host)"
     echo ""
     echo "  Export MYSQL_ROOT_PASSWORD to avoid the root password prompt."
+    echo "  Omit db_password to enter it interactively (safe for special characters)."
     echo ""
     echo "Examples:"
-    echo "  $0 myapp myapp_user 'S3cr3t!'"
-    echo "  $0 myapp myapp_user 'S3cr3t!' '10.0.0.%'"
+    echo "  $0 myapp myapp_user"
+    echo "  $0 myapp myapp_user 'S3cr3t' '10.0.0.%'"
     exit 1
 }
 
@@ -81,9 +82,15 @@ mysql_cmd() {
 }
 
 # ─── Validate input ───────────────────────────────────────────────────────────
-[[ -z "$DB_NAME"  ]] && { error "Missing db_name.";     usage; }
-[[ -z "$DB_USER"  ]] && { error "Missing db_user.";     usage; }
-[[ -z "$DB_PASS"  ]] && { error "Missing db_password."; usage; }
+[[ -z "$DB_NAME" ]] && { error "Missing db_name."; usage; }
+[[ -z "$DB_USER" ]] && { error "Missing db_user.";  usage; }
+
+if [[ -z "$DB_PASS" ]]; then
+    read -rsp "Enter password for '${DB_USER}': " DB_PASS; echo
+    read -rsp "Confirm password: "               _DB_PASS2; echo
+    [[ "$DB_PASS" == "$_DB_PASS2" ]] || { error "Passwords do not match."; exit 1; }
+    [[ -n "$DB_PASS" ]] || { error "Password cannot be empty."; exit 1; }
+fi
 
 # Sanity-check names (letters, digits, underscores only)
 if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
