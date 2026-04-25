@@ -38,6 +38,29 @@ Interactive wizard run as root. Creates an Apache VirtualHost for a new subdomai
 
 ---
 
+### remove-subdomain.sh
+Interactive wizard run as root. Removes an Apache VirtualHost created by `create-subdomain.sh` — cleans up config entries only, document root is never touched.
+
+**Steps performed:**
+1. Lists all `.conf` files in `sites-available` (excludes `000-default.conf` and `default-ssl.conf`), user picks by number
+2. Parses the chosen conf to extract port (from `<VirtualHost *:PORT>`) and DocumentRoot (display only)
+3. Verifies the matching `Listen` directive exists in `ports.conf` — aborts if not found
+4. Checks Cloudflare config for an ingress entry matching the hostname — noted if present
+5. Shows a preview of everything that will be removed and confirms document root is untouched
+6. Requires user to type `yes` to proceed
+7. Backs up `ports.conf` and the vhost conf before touching anything
+8. Runs `a2dissite`, removes the `Listen` line (by line number), deletes the vhost conf
+9. Removes the CF ingress block (hostname + service lines) if found, with backup
+10. Runs `apache2ctl configtest` and `systemctl restart apache2` — full rollback on failure
+
+**Rollback:** restores `ports.conf` and vhost conf from timestamped backups, restores CF config if modified, re-enables the site via `a2ensite`, reloads Apache. Triggered on any failure after backups are taken.
+
+**Cloudflare restart deferral:** same pattern as `create-subdomain.sh` — `systemctl restart cloudflared` runs after `print_report` so the tunnel doesn't drop before the user reads the output.
+
+**What is NOT removed:** document root directory and its contents are always left intact.
+
+---
+
 ### create-mariadb.sh
 Non-interactive, takes arguments. Creates a MariaDB database + user with localhost and remote access.
 
