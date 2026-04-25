@@ -33,8 +33,8 @@ db_reachable() {
 
     local env_file="$APP_DIR/.env"
     if [ ! -f "$env_file" ]; then
-        echo "  [DB] No .env file — skipping connectivity check"
-        return 2
+        echo "  [DB] No .env file — assuming no database, skipping migrations"
+        return 1
     fi
 
     local host port user pass dbname
