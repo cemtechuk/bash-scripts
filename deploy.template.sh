@@ -21,8 +21,8 @@ perm() {
     fi
 }
 
-# Read a key from an .env file and strip surrounding quotes
-_env_val() { grep -m1 "^${1}=" "${2}" | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//"; }
+# Read a key from an .env file and strip surrounding quotes/whitespace (handles "KEY=val" and "KEY = val")
+_env_val() { grep -m1 "^${1}[[:space:]]*=" "${2}" | cut -d= -f2- | sed "s/^[[:space:]]*//;s/^['\"]//;s/['\"]$//"; }
 
 # Returns 0 if DB is reachable, 1 if unreachable, 2 if check could not run
 db_reachable() {
