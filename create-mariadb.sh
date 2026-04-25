@@ -85,13 +85,6 @@ mysql_cmd() {
 [[ -z "$DB_NAME" ]] && { error "Missing db_name."; usage; }
 [[ -z "$DB_USER" ]] && { error "Missing db_user.";  usage; }
 
-if [[ -z "$DB_PASS" ]]; then
-    read -rsp "Enter password for '${DB_USER}': " DB_PASS; echo
-    read -rsp "Confirm password: "               _DB_PASS2; echo
-    [[ "$DB_PASS" == "$_DB_PASS2" ]] || { error "Passwords do not match."; exit 1; }
-    [[ -n "$DB_PASS" ]] || { error "Password cannot be empty."; exit 1; }
-fi
-
 # Sanity-check names (letters, digits, underscores only)
 if [[ ! "$DB_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
     error "db_name '${DB_NAME}' contains invalid characters (allowed: a-z A-Z 0-9 _)."
@@ -109,6 +102,16 @@ if [[ -z "$MYSQL_ROOT_PASS" ]]; then
 fi
 
 MC=$(mysql_cmd)
+
+# ─── Prompt for new user password if not provided as arg ─────────────────────
+if [[ -z "$DB_PASS" ]]; then
+    echo
+    echo "Now set a password for the new MariaDB user '${DB_USER}':"
+    read -rsp "  New user password: "  DB_PASS;  echo
+    read -rsp "  Confirm password:  " _DB_PASS2; echo
+    [[ "$DB_PASS" == "$_DB_PASS2" ]] || { error "Passwords do not match."; exit 1; }
+    [[ -n "$DB_PASS" ]] || { error "Password cannot be empty."; exit 1; }
+fi
 
 # ─── Verify root connection ───────────────────────────────────────────────────
 info "Testing root connection to MariaDB..."
