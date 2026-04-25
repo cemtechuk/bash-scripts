@@ -8,7 +8,7 @@ APP_DIR="/var/www/HOSTNAME"
 APP_USER="cem"
 APP_GROUP="www-data"
 
-# Framework: laravel | codeigniter | none
+# Framework: laravel | codeigniter | symfony | cakephp | none
 FRAMEWORK="none"
 # ─────────────────────────────────────────────────────────────
 
@@ -32,6 +32,18 @@ elif [ "$FRAMEWORK" = "codeigniter" ]; then
     sudo chmod -R 775 "$APP_DIR/writable"
     # sudo chmod -R 775 "$APP_DIR/public/uploads"   # uncomment if handling file uploads
 
+elif [ "$FRAMEWORK" = "symfony" ]; then
+    echo "==> Fixing permissions..."
+    sudo chmod -R 775 "$APP_DIR/var/cache"
+    sudo chmod -R 775 "$APP_DIR/var/log"
+    # sudo chmod -R 775 "$APP_DIR/public/uploads"   # uncomment if handling file uploads
+
+elif [ "$FRAMEWORK" = "cakephp" ]; then
+    echo "==> Fixing permissions..."
+    sudo chmod -R 775 "$APP_DIR/logs"
+    sudo chmod -R 775 "$APP_DIR/tmp"
+    # sudo chmod -R 775 "$APP_DIR/webroot/uploads"  # uncomment if handling file uploads
+
 else
     : # No framework — add project-specific chmod lines here if needed
     # sudo chmod -R 775 "$APP_DIR/uploads"
@@ -45,6 +57,14 @@ if [ "$FRAMEWORK" = "laravel" ]; then
 elif [ "$FRAMEWORK" = "codeigniter" ]; then
     echo "==> Running migrations..."
     php spark migrate --all
+
+elif [ "$FRAMEWORK" = "symfony" ]; then
+    echo "==> Running migrations..."
+    php bin/console doctrine:migrations:migrate --no-interaction
+
+elif [ "$FRAMEWORK" = "cakephp" ]; then
+    echo "==> Running migrations..."
+    bin/cake migrations migrate
 
 # else: no migrations
 fi
@@ -60,6 +80,15 @@ if [ "$FRAMEWORK" = "laravel" ]; then
 elif [ "$FRAMEWORK" = "codeigniter" ]; then
     echo "==> Clearing caches..."
     php spark cache:clear
+
+elif [ "$FRAMEWORK" = "symfony" ]; then
+    echo "==> Clearing caches..."
+    php bin/console cache:clear --env=prod --no-debug
+
+elif [ "$FRAMEWORK" = "cakephp" ]; then
+    echo "==> Clearing caches..."
+    bin/cake orm_cache clear
+    bin/cake cache clear_all
 
 # else: no framework cache to clear
 fi
