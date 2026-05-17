@@ -9,8 +9,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SITES_AVAILABLE="/etc/nginx/sites-available"
-SITES_ENABLED="/etc/nginx/sites-enabled"
+SITES_CONF="/etc/nginx/conf.d/sites.conf"
 CF_CONFIG_CANDIDATES=(
     "/etc/cloudflared/config.yml"
     "/etc/cloudflared/config.yaml"
@@ -22,11 +21,11 @@ CF_CONFIG_CANDIDATES=(
 REPORT=()
 
 # ── Rollback tracking ─────────────────────────────────────────────────────────
-CONF_FILE_BACKUP=""
+SITES_CONF_BACKUP=""
 CF_CONFIG_BACKUP=""
 CF_CONFIG=""
-SYMLINK_REMOVED=false
-CONF_FILE=""
+INCLUDE_REMOVED=false
+NGINX_CONF=""
 SUBDOMAIN=""
 PORT=""
 DOCROOT=""
@@ -41,20 +40,11 @@ header() { echo -e "\n${BOLD}${CYAN}══ $* ══${RESET}"; }
 rollback() {
     echo -e "\n${RED}${BOLD}!! FAILURE DETECTED — Rolling back changes...${RESET}"
 
-    # Restore vhost conf before re-linking
-    if [[ -n "$CONF_FILE_BACKUP" && -f "$CONF_FILE_BACKUP" ]]; then
-        cp "$CONF_FILE_BACKUP" "$CONF_FILE"
-        rm -f "$CONF_FILE_BACKUP"
-        echo -e "${YELLOW}[ROLLBACK]${RESET} Restored $CONF_FILE from backup"
-    fi
-
-    # Restore symlink if we removed it
-    if [[ "$SYMLINK_REMOVED" == "true" && -n "$CONF_FILE" ]]; then
-        SYMLINK="${SITES_ENABLED}/$(basename "$CONF_FILE")"
-        if [[ ! -L "$SYMLINK" && -f "$CONF_FILE" ]]; then
-            ln -s "$CONF_FILE" "$SYMLINK"
-            echo -e "${YELLOW}[ROLLBACK]${RESET} Restored symlink $SYMLINK"
-        fi
+    # Restore sites.conf (this restores the include line if we removed it)
+    if [[ -n "$SITES_CONF_BACKUP" && -f "$SITES_CONF_BACKUP" ]]; then
+        cp "$SITES_CONF_BACKUP" "$SITES_CONF"
+        rm -f "$SITES_CONF_BACKUP"
+        echo -e "${YELLOW}[ROLLBACK]${RESET} Restored $SITES_CONF from backup"
     fi
 
     # Restore CF config
@@ -88,7 +78,8 @@ print_report() {
     echo -e "  ${BOLD}Hostname   :${RESET} ${SUBDOMAIN:-n/a}"
     echo -e "  ${BOLD}Port       :${RESET} ${PORT:-n/a}"
     echo -e "  ${BOLD}DocRoot    :${RESET} ${DOCROOT:-n/a}  ${YELLOW}(not deleted)${RESET}"
-    echo -e "  ${BOLD}Server conf:${RESET} ${CONF_FILE:-n/a}"
+    echo -e "  ${BOLD}nginx conf :${RESET} ${NGINX_CONF:-n/a}  ${YELLOW}(not deleted)${RESET}"
+    echo -e "  ${BOLD}sites.conf :${RESET} $SITES_CONF"
     [[ -n "$CF_CONFIG" ]] && echo -e "  ${BOLD}CF config  :${RESET} $CF_CONFIG"
     echo ""
     echo -e "  ${BOLD}Actions performed:${RESET}"
@@ -97,7 +88,7 @@ print_report() {
     done
     echo ""
     echo -e "${GREEN}  Done! ${BOLD}${SUBDOMAIN:-n/a}${RESET}${GREEN} has been removed from nginx.${RESET}"
-    echo -e "${YELLOW}  Document root ${DOCROOT:-n/a} was left intact.${RESET}"
+    echo -e "${YELLOW}  Project files and nginx.conf were left intact.${RESET}"
     echo ""
 }
 
@@ -114,65 +105,65 @@ echo "  ║       Nginx Subdomain Remover — RPi5             ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 
+# ── Sanity check ──────────────────────────────────────────────────────────────
+[[ -f "$SITES_CONF" ]] || die "Main sites config not found: $SITES_CONF"
+
 # =============================================================================
 # STEP 1 — Select domain to remove
 # =============================================================================
 header "STEP 1 — Select Domain to Remove"
 
-mapfile -t CONF_FILES < <(find "$SITES_AVAILABLE" -maxdepth 1 -name "*.conf" \
-    ! -name "default" ! -name "default.conf" | sort)
+# Build list from include directives in sites.conf
+mapfile -t INCLUDES < <(grep -E '^\s*include\s+' "$SITES_CONF" \
+    | awk '{print $2}' | tr -d ';' | grep -v '^$')
 
-if [[ ${#CONF_FILES[@]} -eq 0 ]]; then
-    die "No custom site configs found in $SITES_AVAILABLE"
+if [[ ${#INCLUDES[@]} -eq 0 ]]; then
+    die "No include directives found in $SITES_CONF"
 fi
 
 echo ""
 echo -e "  ${BOLD}Available sites:${RESET}"
-for i in "${!CONF_FILES[@]}"; do
-    ENABLED_MARK=""
-    SYMLINK_CHECK="${SITES_ENABLED}/$(basename "${CONF_FILES[$i]}")"
-    [[ -L "$SYMLINK_CHECK" ]] && ENABLED_MARK=" ${GREEN}[enabled]${RESET}"
-    printf "    [%d] %s%b\n" "$((i+1))" "$(basename "${CONF_FILES[$i]}" .conf)" "$ENABLED_MARK"
+for i in "${!INCLUDES[@]}"; do
+    INC_PATH="${INCLUDES[$i]}"
+    SITE_LABEL=$(basename "$(dirname "$INC_PATH")")
+    MISSING_MARK=""
+    [[ ! -f "$INC_PATH" ]] && MISSING_MARK=" ${YELLOW}[conf file missing]${RESET}"
+    printf "    [%d] %s%b  ${CYAN}(%s)${RESET}\n" "$((i+1))" "$SITE_LABEL" "$MISSING_MARK" "$INC_PATH"
 done
 echo ""
 
 while true; do
     read -rp "$(echo -e "  ${BOLD}Enter number:${RESET} ")" SELECTION
-    if [[ "$SELECTION" =~ ^[0-9]+$ ]] && (( SELECTION >= 1 && SELECTION <= ${#CONF_FILES[@]} )); then
-        CONF_FILE="${CONF_FILES[$((SELECTION-1))]}"
-        SUBDOMAIN="$(basename "$CONF_FILE" .conf)"
+    if [[ "$SELECTION" =~ ^[0-9]+$ ]] && (( SELECTION >= 1 && SELECTION <= ${#INCLUDES[@]} )); then
+        NGINX_CONF="${INCLUDES[$((SELECTION-1))]}"
+        SUBDOMAIN=$(basename "$(dirname "$NGINX_CONF")")
         break
     fi
     echo -e "  ${YELLOW}Invalid selection — enter a number from the list.${RESET}"
 done
 
-log "Selected: $SUBDOMAIN ($CONF_FILE)"
+log "Selected: $SUBDOMAIN ($NGINX_CONF)"
 
 # =============================================================================
-# STEP 2 — Parse config and verify all targets exist
+# STEP 2 — Parse config and verify
 # =============================================================================
 header "STEP 2 — Reading & Verifying Configuration"
 
-# Extract port from listen directive (handles: listen PORT; listen IP:PORT; listen PORT default_server;)
-PORT=$(grep -E '^\s*listen\s+' "$CONF_FILE" | grep -v 'ssl' | head -1 \
-    | grep -oE '\b[0-9]{1,5}\b' | tail -1 || true)
-if [[ -z "$PORT" ]]; then
-    warn "Cannot determine port from $CONF_FILE — will display n/a in report."
-fi
-[[ -n "$PORT" ]] && log "Port found in server block: $PORT"
-
-# Extract root directive for display
-DOCROOT=$(grep -E '^\s*root\s+' "$CONF_FILE" | awk '{print $2}' | head -1 | tr -d ';' || true)
-[[ -z "$DOCROOT" ]] && warn "root directive not found in $CONF_FILE — cannot display in report"
-
-# Check for symlink in sites-enabled
-SYMLINK="${SITES_ENABLED}/$(basename "$CONF_FILE")"
-SYMLINK_FOUND=false
-if [[ -L "$SYMLINK" ]]; then
-    SYMLINK_FOUND=true
-    log "Found enabled symlink: $SYMLINK"
+if [[ ! -f "$NGINX_CONF" ]]; then
+    warn "nginx.conf not found at $NGINX_CONF — will only remove the include line."
+    PORT="n/a"
+    DOCROOT="n/a"
 else
-    warn "No symlink found at $SYMLINK — site may already be disabled"
+    # Extract port (skip ssl lines; take last number on the first plain listen line)
+    PORT=$(grep -E '^\s*listen\s+' "$NGINX_CONF" | grep -v 'ssl' | head -1 \
+        | grep -oE '\b[0-9]{1,5}\b' | tail -1 || true)
+    [[ -z "$PORT" ]] && { warn "Cannot determine port from $NGINX_CONF."; PORT="n/a"; }
+    [[ "$PORT" != "n/a" ]] && log "Port: $PORT"
+
+    # Extract root directive
+    DOCROOT=$(grep -E '^\s*root\s+' "$NGINX_CONF" | awk '{print $2}' | head -1 | tr -d ';' || true)
+    [[ -z "$DOCROOT" ]] && { warn "root directive not found in $NGINX_CONF."; DOCROOT="n/a"; }
+    [[ "$DOCROOT" != "n/a" ]] && log "Document root: $DOCROOT"
 fi
 
 # Check for a Cloudflare ingress entry
@@ -200,18 +191,14 @@ header "STEP 3 — Preview of Changes"
 echo ""
 echo -e "  ${BOLD}${RED}The following will be removed:${RESET}"
 echo ""
-if [[ "$SYMLINK_FOUND" == "true" ]]; then
-    printf "    ${RED}✖${RESET}  Enabled symlink    →  %s\n" "$SYMLINK"
-else
-    printf "    ${YELLOW}⚠${RESET}  Enabled symlink    →  not found (already removed — skipping)\n"
-fi
-printf "    ${RED}✖${RESET}  Server block config →  %s\n" "$CONF_FILE"
+printf "    ${RED}✖${RESET}  Include directive  →  'include %s;'  from %s\n" "$NGINX_CONF" "$SITES_CONF"
 if [[ "$CF_INGRESS_FOUND" == "true" ]]; then
     printf "    ${RED}✖${RESET}  CF ingress rule    →  hostname: %s  from %s\n" "$SUBDOMAIN" "$CF_CONFIG"
 fi
 echo ""
 echo -e "  ${BOLD}${GREEN}The following will NOT be removed:${RESET}"
-printf "    ${GREEN}✔${RESET}  Document root  →  %s\n" "${DOCROOT:-unknown (not found in config)}"
+printf "    ${GREEN}✔${RESET}  nginx.conf   →  %s\n" "$NGINX_CONF"
+printf "    ${GREEN}✔${RESET}  Document root →  %s\n" "${DOCROOT:-unknown}"
 echo ""
 
 # =============================================================================
@@ -219,7 +206,7 @@ echo ""
 # =============================================================================
 header "STEP 4 — Confirm Removal"
 echo ""
-echo -e "  ${BOLD}${RED}This will permanently remove nginx config for: ${SUBDOMAIN}${RESET}"
+echo -e "  ${BOLD}${RED}This will deregister nginx config for: ${SUBDOMAIN}${RESET}"
 echo ""
 read -rp "$(echo -e "  ${BOLD}Type 'yes' to proceed, anything else to abort:${RESET} ")" CONFIRM
 if [[ "$CONFIRM" != "yes" ]]; then
@@ -233,23 +220,20 @@ fi
 # =============================================================================
 header "STEP 5 — Removing Configuration"
 
-# — Backup vhost conf —
-CONF_FILE_BACKUP="${CONF_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-cp "$CONF_FILE" "$CONF_FILE_BACKUP"
-log "Backed up $CONF_FILE → $CONF_FILE_BACKUP"
+# — Backup sites.conf —
+SITES_CONF_BACKUP="${SITES_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+cp "$SITES_CONF" "$SITES_CONF_BACKUP"
+log "Backed up $SITES_CONF → $SITES_CONF_BACKUP"
 
-# — Remove symlink from sites-enabled —
-if [[ "$SYMLINK_FOUND" == "true" ]]; then
-    rm -f "$SYMLINK"
-    SYMLINK_REMOVED=true
-    ok "Removed enabled symlink $SYMLINK"
-else
-    warn "Skipped symlink removal — not found in $SITES_ENABLED"
+# — Remove include line from sites.conf —
+ESCAPED=$(echo "$NGINX_CONF" | sed 's|/|\\/|g')
+INCLUDE_LINE_NUM=$(grep -n "include ${ESCAPED};" "$SITES_CONF" | head -1 | cut -d: -f1 || true)
+if [[ -z "$INCLUDE_LINE_NUM" ]]; then
+    die "Include directive for $NGINX_CONF not found in $SITES_CONF — cannot remove it"
 fi
-
-# — Delete server block conf —
-rm -f "$CONF_FILE"
-ok "Removed $CONF_FILE"
+sed -i "${INCLUDE_LINE_NUM}d" "$SITES_CONF"
+INCLUDE_REMOVED=true
+ok "Removed 'include ${NGINX_CONF};' from $SITES_CONF"
 
 # — Remove CF ingress entry —
 CF_NEEDS_RESTART=false
@@ -258,7 +242,8 @@ if [[ "$CF_INGRESS_FOUND" == "true" ]]; then
     cp "$CF_CONFIG" "$CF_CONFIG_BACKUP"
     log "Backed up $CF_CONFIG → $CF_CONFIG_BACKUP"
 
-    INGRESS_LINE_NUM=$(grep -nE "^\s*-\s+hostname:\s+${SUBDOMAIN}\s*$" "$CF_CONFIG" | head -1 | cut -d: -f1 || true)
+    INGRESS_LINE_NUM=$(grep -nE "^\s*-\s+hostname:\s+${SUBDOMAIN}\s*$" "$CF_CONFIG" \
+        | head -1 | cut -d: -f1 || true)
     if [[ -z "$INGRESS_LINE_NUM" ]]; then
         die "Cloudflare ingress entry for $SUBDOMAIN not found in $CF_CONFIG — cannot remove it"
     fi
@@ -292,7 +277,7 @@ ok "nginx reloaded"
 
 # All succeeded — disarm trap and clean up backups
 trap - EXIT
-[[ -f "$CONF_FILE_BACKUP" ]] && rm -f "$CONF_FILE_BACKUP"
+rm -f "$SITES_CONF_BACKUP"
 [[ -n "$CF_CONFIG_BACKUP" && -f "$CF_CONFIG_BACKUP" ]] && rm -f "$CF_CONFIG_BACKUP"
 
 # =============================================================================

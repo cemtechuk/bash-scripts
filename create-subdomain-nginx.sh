@@ -9,8 +9,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SITES_AVAILABLE="/etc/nginx/sites-available"
-SITES_ENABLED="/etc/nginx/sites-enabled"
+SITES_CONF="/etc/nginx/conf.d/sites.conf"
 CF_CONFIG_CANDIDATES=(
     "/etc/cloudflared/config.yml"
     "/etc/cloudflared/config.yaml"
@@ -22,12 +21,13 @@ CF_CONFIG_CANDIDATES=(
 REPORT=()
 
 # ── Rollback tracking ─────────────────────────────────────────────────────────
-CONF_FILE_CREATED=false
-SYMLINK_CREATED=false
+SITES_CONF_BACKUP=""
+NGINX_CONF_CREATED=false
+INCLUDE_ADDED=false
 DOCROOT_CREATED=false
 DOCROOT=""
 BASE_DOCROOT=""
-CONF_FILE=""
+NGINX_CONF=""
 FRAMEWORK="none"
 FW_PUBLIC_DIR=""
 IS_FRAMEWORK=false
@@ -44,17 +44,27 @@ header() { echo -e "\n${BOLD}${CYAN}══ $* ══${RESET}"; }
 rollback() {
     echo -e "\n${RED}${BOLD}!! FAILURE DETECTED — Rolling back changes...${RESET}"
 
-    if [[ "$SYMLINK_CREATED" == "true" && -n "$CONF_FILE" ]]; then
-        SYMLINK="${SITES_ENABLED}/$(basename "$CONF_FILE")"
-        [[ -L "$SYMLINK" ]] && rm -f "$SYMLINK" \
-            && echo -e "${YELLOW}[ROLLBACK]${RESET} Removed symlink $SYMLINK"
+    # Remove the include line we appended to sites.conf
+    if [[ "$INCLUDE_ADDED" == "true" && -n "$NGINX_CONF" ]]; then
+        ESCAPED=$(echo "$NGINX_CONF" | sed 's|/|\\/|g')
+        sed -i "/include ${ESCAPED};/d" "$SITES_CONF" 2>/dev/null || true
+        echo -e "${YELLOW}[ROLLBACK]${RESET} Removed include directive from $SITES_CONF"
     fi
 
-    if [[ "$CONF_FILE_CREATED" == "true" && -n "$CONF_FILE" && -f "$CONF_FILE" ]]; then
-        rm -f "$CONF_FILE"
-        echo -e "${YELLOW}[ROLLBACK]${RESET} Removed $CONF_FILE"
+    # Restore sites.conf from backup (catches any partial edits)
+    if [[ -n "$SITES_CONF_BACKUP" && -f "$SITES_CONF_BACKUP" ]]; then
+        cp "$SITES_CONF_BACKUP" "$SITES_CONF"
+        rm -f "$SITES_CONF_BACKUP"
+        echo -e "${YELLOW}[ROLLBACK]${RESET} Restored $SITES_CONF from backup"
     fi
 
+    # Remove nginx.conf from project root if we created it
+    if [[ "$NGINX_CONF_CREATED" == "true" && -n "$NGINX_CONF" && -f "$NGINX_CONF" ]]; then
+        rm -f "$NGINX_CONF"
+        echo -e "${YELLOW}[ROLLBACK]${RESET} Removed $NGINX_CONF"
+    fi
+
+    # Remove docroot only if we created it this run
     if [[ "$DOCROOT_CREATED" == "true" && -n "$DOCROOT" && -d "$DOCROOT" ]]; then
         rm -rf "$DOCROOT"
         echo -e "${YELLOW}[ROLLBACK]${RESET} Removed $DOCROOT"
@@ -85,7 +95,8 @@ print_report() {
     echo -e "  ${BOLD}Port       :${RESET} ${PORT:-n/a}"
     echo -e "  ${BOLD}Framework  :${RESET} ${FRAMEWORK:-none}"
     echo -e "  ${BOLD}DocRoot    :${RESET} ${DOCROOT:-n/a}"
-    echo -e "  ${BOLD}Server conf:${RESET} ${CONF_FILE:-n/a}"
+    echo -e "  ${BOLD}nginx conf :${RESET} ${NGINX_CONF:-n/a}"
+    echo -e "  ${BOLD}sites.conf :${RESET} $SITES_CONF"
     [[ -n "${DEPLOY_SCRIPT:-}" ]] && echo -e "  ${BOLD}Deploy     :${RESET} $DEPLOY_SCRIPT"
     [[ -n "${CF_CONFIG:-}" ]] && echo -e "  ${BOLD}CF config  :${RESET} $CF_CONFIG"
     [[ -n "${GIT_REMOTE_DISPLAY:-}" ]] && echo -e "  ${BOLD}Git remote :${RESET} $GIT_REMOTE_DISPLAY"
@@ -108,6 +119,9 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo "$0" "$@"
 fi
 
+# ── Sanity check ──────────────────────────────────────────────────────────────
+[[ -d "/etc/nginx/conf.d" ]] || die "/etc/nginx/conf.d not found — is nginx installed?"
+
 # ── Banner ────────────────────────────────────────────────────────────────────
 clear
 echo -e "${BOLD}${GREEN}"
@@ -121,7 +135,7 @@ echo -e "${RESET}"
 # =============================================================================
 header "STEP 1 — Subdomain Details"
 
-DETECTED_DOMAIN=$(grep -rhE '^\s*server_name\s+\S+' /etc/nginx/sites-enabled/ 2>/dev/null \
+DETECTED_DOMAIN=$(grep -rhE '^\s*server_name\s+\S+' /etc/nginx/conf.d/ 2>/dev/null \
     | grep -oE '[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' | grep -v '^www\.' | head -1 || true)
 [[ -z "$DETECTED_DOMAIN" ]] && DETECTED_DOMAIN=$(hostname -f 2>/dev/null || true)
 
@@ -166,10 +180,17 @@ REPORT+=("  Hostname : $SUBDOMAIN")
 # =============================================================================
 header "STEP 2 — Port Assignment"
 
-# Scan existing nginx configs for used ports
-USED_PORTS=$(grep -rhE '^\s*listen\s+' "${SITES_AVAILABLE}"/ 2>/dev/null \
-    | grep -oE '\b[0-9]{1,5}\b' | sort -nu || true)
-log "Existing listen ports found in nginx configs:"
+# Scan all included nginx.conf files listed in sites.conf for used ports
+USED_PORTS=""
+if [[ -f "$SITES_CONF" ]]; then
+    while IFS= read -r inc_path; do
+        [[ -f "$inc_path" ]] && USED_PORTS+=$'\n'"$(grep -E '^\s*listen\s+' "$inc_path" 2>/dev/null \
+            | grep -oE '\b[0-9]{1,5}\b' || true)"
+    done < <(grep -E '^\s*include\s+' "$SITES_CONF" | awk '{print $2}' | tr -d ';')
+fi
+USED_PORTS=$(echo "$USED_PORTS" | sort -nu | grep -v '^$' || true)
+
+log "Existing listen ports found across managed sites:"
 echo "$USED_PORTS" | while read -r p; do [[ -n "$p" ]] && echo "    • $p"; done
 
 SUGGESTED_PORT=$(echo "$USED_PORTS" | awk '
@@ -214,7 +235,7 @@ REPORT+=("  Port     : $PORT")
 # =============================================================================
 header "STEP 3 — Document Root"
 
-DEFAULT_DOCROOT="/var/www/${SUBDOMAIN}"
+DEFAULT_BASE_DOCROOT="/var/www/${SUBDOMAIN}"
 
 echo ""
 echo -e "  ${BOLD}Select framework:${RESET}"
@@ -238,13 +259,20 @@ case "${FW_INPUT:-5}" in
        log "No framework selected" ;;
 esac
 
-if [[ "$IS_FRAMEWORK" == "true" ]]; then
-    DEFAULT_DOCROOT="${DEFAULT_DOCROOT}/${FW_PUBLIC_DIR}"
-fi
+DEFAULT_DOCROOT="${DEFAULT_BASE_DOCROOT}${IS_FRAMEWORK:+/${FW_PUBLIC_DIR}}"
 
 read -rp "$(echo -e "${BOLD}Document root${RESET} [${DEFAULT_DOCROOT}]: ")" DOCROOT_INPUT
 DOCROOT="${DOCROOT_INPUT:-$DEFAULT_DOCROOT}"
 DOCROOT="${DOCROOT%/}"
+
+# Derive BASE_DOCROOT (project root, without framework public subdir)
+if [[ "$IS_FRAMEWORK" == "true" ]]; then
+    BASE_DOCROOT="${DOCROOT%/${FW_PUBLIC_DIR}}"
+else
+    BASE_DOCROOT="$DOCROOT"
+fi
+
+NGINX_CONF="${BASE_DOCROOT}/nginx.conf"
 
 if [[ ! -d "$DOCROOT" ]]; then
     read -rp "$(echo -e "${YELLOW}Directory does not exist. Create it?${RESET} [Y/n]: ")" MKDIR_CONFIRM
@@ -266,7 +294,7 @@ HTML
         chown -R www-data:www-data "$DOCROOT"
         ok "Created document root: $DOCROOT"
     else
-        warn "Document root not created. Make sure it exists before starting nginx."
+        warn "Document root not created. Make sure it exists before nginx can serve it."
     fi
 else
     ok "Document root exists: $DOCROOT"
@@ -274,9 +302,9 @@ fi
 REPORT+=("  DocRoot  : $DOCROOT")
 
 # =============================================================================
-# STEP 4 — Write nginx server block
+# STEP 4 — Write nginx.conf into project root
 # =============================================================================
-header "STEP 4 — Creating nginx Server Block"
+header "STEP 4 — Writing nginx.conf"
 
 # Auto-detect PHP-FPM socket
 PHP_FPM_SOCK=$(ls /run/php/php*-fpm.sock 2>/dev/null | sort -V | tail -1 || true)
@@ -294,11 +322,9 @@ else
     TRY_FILES="try_files \$uri \$uri/ =404;"
 fi
 
-CONF_FILE="${SITES_AVAILABLE}/${SUBDOMAIN}.conf"
 CREATE_CONF=false
-
-if [[ -f "$CONF_FILE" ]]; then
-    warn "Config file $CONF_FILE already exists."
+if [[ -f "$NGINX_CONF" ]]; then
+    warn "Config file $NGINX_CONF already exists."
     read -rp "$(echo -e "${YELLOW}Overwrite it?${RESET} [y/N]: ")" OW_CONFIRM
     [[ "${OW_CONFIRM,,}" == "y" ]] && CREATE_CONF=true || log "Skipping — using existing config."
 else
@@ -306,7 +332,7 @@ else
 fi
 
 if [[ "$CREATE_CONF" == "true" ]]; then
-    cat > "$CONF_FILE" <<NGINXCONF
+    cat > "$NGINX_CONF" <<NGINXCONF
 server {
     listen ${PORT};
     server_name ${SUBDOMAIN};
@@ -330,24 +356,36 @@ server {
     access_log /var/log/nginx/${SUBDOMAIN}-access.log;
 }
 NGINXCONF
-    CONF_FILE_CREATED=true
-    ok "Server block written to $CONF_FILE"
+    chown "${SUDO_USER:-root}:www-data" "$NGINX_CONF"
+    chmod 640 "$NGINX_CONF"
+    NGINX_CONF_CREATED=true
+    ok "Server block written to $NGINX_CONF"
 fi
-REPORT+=("  Config   : $CONF_FILE")
+REPORT+=("  nginx conf : $NGINX_CONF")
 
 # =============================================================================
-# STEP 5 — Enable site, syntax check, reload nginx
+# STEP 5 — Add include to sites.conf, syntax check, reload
 # =============================================================================
-header "STEP 5 — Enabling Site & Reloading nginx"
+header "STEP 5 — Registering in sites.conf & Reloading nginx"
 
-SYMLINK="${SITES_ENABLED}/$(basename "$CONF_FILE")"
-if [[ ! -L "$SYMLINK" ]]; then
-    ln -s "$CONF_FILE" "$SYMLINK"
-    SYMLINK_CREATED=true
-    ok "Site enabled via symlink: $SYMLINK"
+# Backup sites.conf before touching it (create the file if it doesn't exist yet)
+if [[ ! -f "$SITES_CONF" ]]; then
+    touch "$SITES_CONF"
+    ok "Created $SITES_CONF"
+fi
+SITES_CONF_BACKUP="${SITES_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+cp "$SITES_CONF" "$SITES_CONF_BACKUP"
+log "Backed up $SITES_CONF → $SITES_CONF_BACKUP"
+
+INCLUDE_LINE="include ${NGINX_CONF};"
+if grep -qF "$INCLUDE_LINE" "$SITES_CONF"; then
+    warn "Include for $NGINX_CONF already present in $SITES_CONF — skipping."
 else
-    warn "Symlink $SYMLINK already exists — skipping."
+    echo "$INCLUDE_LINE" >> "$SITES_CONF"
+    INCLUDE_ADDED=true
+    ok "Appended '$INCLUDE_LINE' to $SITES_CONF"
 fi
+REPORT+=("  sites.conf : $SITES_CONF")
 
 log "Checking nginx config syntax..."
 echo ""
@@ -367,10 +405,12 @@ echo ""
 systemctl status nginx --no-pager -l | head -20
 echo ""
 
-# All good — disarm the rollback trap
-CONF_FILE_CREATED=false
-SYMLINK_CREATED=false
+# All good — disarm the rollback trap and clean up backup
+NGINX_CONF_CREATED=false
+INCLUDE_ADDED=false
 DOCROOT_CREATED=false
+rm -f "$SITES_CONF_BACKUP"
+SITES_CONF_BACKUP=""
 
 # =============================================================================
 # STEP 6 — Deploy script
@@ -380,12 +420,6 @@ header "STEP 6 — Deploy Script"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_FILE="${SCRIPT_DIR}/deploy.template.sh"
 DEPLOY_USER="${SUDO_USER:-cem}"
-
-if [[ "$IS_FRAMEWORK" == "true" ]]; then
-    BASE_DOCROOT="${DOCROOT%/${FW_PUBLIC_DIR}}"
-else
-    BASE_DOCROOT="$DOCROOT"
-fi
 
 if [[ ! -f "$TEMPLATE_FILE" ]]; then
     warn "deploy.template.sh not found at $TEMPLATE_FILE — deploy script not created."
