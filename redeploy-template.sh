@@ -9,7 +9,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SITES_AVAILABLE="/etc/nginx/sites-available"
+SITES_CONF="/etc/nginx/conf.d/sites.conf"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_FILE="${SCRIPT_DIR}/deploy.template.sh"
 
@@ -35,52 +35,52 @@ fi
 clear
 echo -e "${BOLD}${GREEN}"
 echo "  ╔══════════════════════════════════════════════════╗"
-echo "  ║     Redeploy Template — RPi5 LAMP                ║"
+echo "  ║     Redeploy Template — RPi5 nginx               ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 
 # =============================================================================
-# STEP 1 — Select VirtualHost
+# STEP 1 — Select site
 # =============================================================================
-header "STEP 1 — Select VirtualHost"
+header "STEP 1 — Select Site"
 
-mapfile -t CONFS < <(find "$SITES_AVAILABLE" -maxdepth 1 -name '*.conf' \
-    ! -name '000-default.conf' ! -name 'default-ssl.conf' | sort)
+[[ -f "$SITES_CONF" ]] || die "Main sites config not found: $SITES_CONF"
 
-[[ ${#CONFS[@]} -eq 0 ]] && die "No custom vhost configs found in $SITES_AVAILABLE."
+mapfile -t INCLUDES < <(grep -E '^\s*include\s+' "$SITES_CONF" \
+    | awk '{print $2}' | tr -d ';' | grep -v '^$')
+
+[[ ${#INCLUDES[@]} -eq 0 ]] && die "No include directives found in $SITES_CONF."
 
 echo ""
-for i in "${!CONFS[@]}"; do
-    printf "  %2d)  %s\n" $(( i + 1 )) "$(basename "${CONFS[$i]}")"
+for i in "${!INCLUDES[@]}"; do
+    SITE_NAME=$(basename "$(dirname "${INCLUDES[$i]}")")
+    printf "  %2d)  %s\n" $(( i + 1 )) "$SITE_NAME"
 done
 echo ""
 
-read -rp "$(echo -e "${BOLD}Select a vhost [1-${#CONFS[@]}]:${RESET} ")" CHOICE
-[[ "$CHOICE" =~ ^[0-9]+$ ]] && (( CHOICE >= 1 && CHOICE <= ${#CONFS[@]} )) \
+read -rp "$(echo -e "${BOLD}Select a site [1-${#INCLUDES[@]}]:${RESET} ")" CHOICE
+[[ "$CHOICE" =~ ^[0-9]+$ ]] && (( CHOICE >= 1 && CHOICE <= ${#INCLUDES[@]} )) \
     || die "Invalid selection."
 
-CONF_FILE="${CONFS[$(( CHOICE - 1 ))]}"
-VHOST_NAME="$(basename "$CONF_FILE" .conf)"
-log "Selected: $CONF_FILE"
+NGINX_CONF="${INCLUDES[$(( CHOICE - 1 ))]}"
+SITE_NAME=$(basename "$(dirname "$NGINX_CONF")")
+log "Selected: $NGINX_CONF"
 
 # =============================================================================
 # STEP 2 — Determine project root and detect existing settings
 # =============================================================================
 header "STEP 2 — Detecting Paths & Framework"
 
-DOCROOT=$(grep -E '^\s*root\s+' "$CONF_FILE" | awk '{print $2}' | head -1 | tr -d ';')
-[[ -n "$DOCROOT" ]] || die "Could not parse root directive from $CONF_FILE."
+# Project root is always the directory containing nginx.conf
+BASE_DOCROOT=$(dirname "$NGINX_CONF")
 
-# If DocumentRoot ends in a framework public subdir, strip it to get project root
-LAST_PART=$(basename "$DOCROOT")
-if [[ "$LAST_PART" == "public" || "$LAST_PART" == "webroot" ]]; then
-    BASE_DOCROOT=$(dirname "$DOCROOT")
-else
-    BASE_DOCROOT="$DOCROOT"
-fi
+# Read root directive from nginx.conf for display only
+DOCROOT=$(grep -E '^\s*root\s+' "$NGINX_CONF" 2>/dev/null | awk '{print $2}' | head -1 | tr -d ';' || true)
+[[ -z "$DOCROOT" ]] && warn "Could not parse root directive from $NGINX_CONF — display only."
 
-log "DocumentRoot : $DOCROOT"
+log "nginx conf   : $NGINX_CONF"
 log "Project root : $BASE_DOCROOT"
+[[ -n "$DOCROOT" ]] && log "Document root: $DOCROOT"
 
 # Read current values from existing deploy.sh (if present)
 EXISTING_DEPLOY="${BASE_DOCROOT}/deploy.sh"
@@ -188,7 +188,7 @@ echo "  ╔═══════════════════════
 echo "  ║                    DONE                          ║"
 echo "  ╚══════════════════════════════════════════════════╝"
 echo -e "${RESET}"
-echo -e "  ${BOLD}VHost      :${RESET} $VHOST_NAME"
+echo -e "  ${BOLD}Site       :${RESET} $SITE_NAME"
 echo -e "  ${BOLD}Project    :${RESET} $BASE_DOCROOT"
 echo -e "  ${BOLD}Framework  :${RESET} $FRAMEWORK"
 echo -e "  ${BOLD}App user   :${RESET} $DEPLOY_USER"
