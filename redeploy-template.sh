@@ -9,7 +9,7 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SITES_AVAILABLE="/etc/apache2/sites-available"
+SITES_AVAILABLE="/etc/nginx/sites-available"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_FILE="${SCRIPT_DIR}/deploy.template.sh"
 
@@ -68,8 +68,8 @@ log "Selected: $CONF_FILE"
 # =============================================================================
 header "STEP 2 — Detecting Paths & Framework"
 
-DOCROOT=$(grep -E '^\s*DocumentRoot\s+' "$CONF_FILE" | awk '{print $2}' | head -1)
-[[ -n "$DOCROOT" ]] || die "Could not parse DocumentRoot from $CONF_FILE."
+DOCROOT=$(grep -E '^\s*root\s+' "$CONF_FILE" | awk '{print $2}' | head -1 | tr -d ';')
+[[ -n "$DOCROOT" ]] || die "Could not parse root directive from $CONF_FILE."
 
 # If DocumentRoot ends in a framework public subdir, strip it to get project root
 LAST_PART=$(basename "$DOCROOT")
@@ -167,6 +167,17 @@ chmod 750 "$DEPLOY_SCRIPT"
 chown "${DEPLOY_USER}:www-data" "$DEPLOY_SCRIPT"
 
 ok "deploy.sh written to $DEPLOY_SCRIPT"
+
+# =============================================================================
+# STEP 6 — Reload nginx
+# =============================================================================
+header "STEP 6 — Reloading nginx"
+
+if systemctl reload nginx; then
+    ok "nginx reloaded successfully."
+else
+    warn "nginx reload failed — check 'systemctl status nginx' for details."
+fi
 
 # =============================================================================
 # REPORT
